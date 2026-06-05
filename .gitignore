@@ -1,1 +1,5 @@
 processed_graphs/
+*.pt
+.ipynb_checkpoints/
+*.ipnyb
+prepared_data/
