@@ -3,3 +3,4 @@ processed_graphs/
 .ipynb_checkpoints/
 *.ipnyb
 prepared_data/
+notebooks/build_graphs.ipynb
