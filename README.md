@@ -22,8 +22,7 @@ The PC-MT-EVRP-RT-D is a complex combinatorial optimization problem with:
   per trip.
 - **Load capacity**: the vehicle has a finite carrying capacity.
 
-Solving the problem exactly or with metaheuristics (ALNS, branch-and-price)
-is expensive. This repository builds a GAT-based **surrogate model** that
+This repository builds a GAT-based **surrogate model** that
 predicts the objective value of an ALNS solution directly from the graph
 representation of the problem instance, enabling rapid evaluation in
 search-intensive workflows.
