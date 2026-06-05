@@ -1,0 +1,16 @@
+# Core runtime dependencies for build_graphs.py
+#
+# Install with:
+#     pip install -r requirements.txt
+#
+# NOTE on torch-geometric:
+# PyG has CUDA-specific optional dependencies (torch-scatter, torch-sparse,
+# torch-cluster). For build_graphs.py these are NOT required — only the core
+# `torch_geometric.data.Data` class is used, which is pure Python on top of
+# torch. They become necessary later when training the GAT (for some pooling
+# and message-passing layers), at which point follow the official guide at
+#     https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html
+# and pick the wheel matching your CUDA / CPU build of torch.
+
+torch>=2.0
+torch-geometric>=2.4
