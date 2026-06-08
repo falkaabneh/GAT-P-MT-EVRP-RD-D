@@ -4,3 +4,5 @@ processed_graphs/
 *.ipnyb
 prepared_data/
 notebooks/build_graphs.ipynb
+models/
+wandb/
