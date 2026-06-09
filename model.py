@@ -29,8 +29,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from torch_geometric.data import Batch, Data
-from torch_geometric.nn import GATv2Conv, GraphNorm, global_add_pool
-
+#from torch_geometric.nn import GATv2Conv, GraphNorm, global_add_pool
+from torch_geometric.nn import GATv2Conv, GraphNorm, global_mean_pool
 
 # ---------------------------------------------------------------------------
 # Model
@@ -175,13 +175,15 @@ class GATSurrogate(nn.Module):
         e = self.edge_encoder(edge_attr)    # [E, edge_hidden_dim]
 
         for gat, norm in zip(self.gat_layers, self.norms):
-            h_new = gat(h, edge_index, edge_attr=e)         # [N, hidden_dim]
-            h_new = norm(h_new, batch_idx)
-            h_new = F.relu(h_new)
-            h_new = F.dropout(h_new, p=self.dropout_p, training=self.training)
-            h = h + h_new if self.use_residual else h_new   # [N, hidden_dim]
+            h_in = h
+            h = gat(h, edge_index, edge_attr=e)
+            h = norm(h, batch_idx)
+            if self.use_residual:
+                h = h + h_in
+            h = F.relu(h)
+            h = F.dropout(h, p=self.dropout_p, training=self.training)
 
-        g = global_add_pool(h, batch_idx)                   # [B, hidden_dim]
+        g = global_mean_pool(h, batch_idx)                   # [B, hidden_dim]
 
         if self.use_global_conditioning:
             bat = batch.battery_capacity.view(-1, 1)        # [B, 1]
