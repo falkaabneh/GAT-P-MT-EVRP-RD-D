@@ -1,0 +1,70 @@
+# sweep.yaml — Bayesian hyperparameter sweep for the GAT surrogate model.
+#
+# Workflow:
+#   1. wandb sweep sweep.yaml              # registers the sweep; prints a SWEEP_ID
+#   2. wandb agent <ENTITY>/<PROJECT>/<SWEEP_ID>
+#      (run more agents in parallel by repeating step 2 in other terminals or GPUs)
+#
+# The agent calls `python train.py --key=value ...` with hyperparameter values
+# suggested by Bayesian optimization, picking the run with the lowest val_loss.
+#
+# Hyperband early-termination kills runs that look obviously bad after `min_iter`
+# epochs, saving compute for promising configurations.
+
+program: train.py
+method: bayes
+project: gat-evrp
+metric:
+  name: val_loss
+  goal: minimize
+
+early_terminate:
+  type: hyperband
+  min_iter: 20      # don't kill runs before they've had 20 epochs to learn
+
+parameters:
+  # --- Optimizer ---
+  lr:
+    distribution: log_uniform_values
+    min: 1.0e-5
+    max: 1.0e-2
+  weight_decay:
+    distribution: log_uniform_values
+    min: 1.0e-6
+    max: 1.0e-2
+
+  # --- Model architecture ---
+  hidden_dim:
+    values: [64, 128, 256]
+  edge_hidden_dim:
+    values: [16, 32, 64]
+  num_gat_layers:
+    values: [2, 3, 4, 5, 6]
+  heads:
+    values: [2, 4, 8]
+  head_aggr:
+    values: [concat, average]
+  dropout:
+    distribution: uniform
+    min: 0.0
+    max: 0.4
+  head_dropout:
+    distribution: uniform
+    min: 0.0
+    max: 0.4
+  head_depth:
+    values: [1, 2, 3]
+
+  # --- Scheduler ---
+  t0:
+    values: [10, 15, 20, 30]
+
+  # --- Fixed (not swept; agent will still pass them) ---
+  epochs:
+    value: 110
+  batch_size:
+    value: 64
+  patience:
+    value: 31
+  grad_clip:
+    value: 1.0
