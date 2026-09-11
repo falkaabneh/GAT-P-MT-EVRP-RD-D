@@ -14,3 +14,6 @@
 
 torch>=2.0
 torch-geometric>=2.4
+# Training pipeline
+wandb>=0.15        # experiment logging and Bayesian sweeps
+matplotlib>=3.5    # exploratory plots (target distribution, etc.)

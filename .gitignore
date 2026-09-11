@@ -6,3 +6,5 @@ prepared_data/
 notebooks/build_graphs.ipynb
 models/
 wandb/
+__pycache__/
+*.pdf

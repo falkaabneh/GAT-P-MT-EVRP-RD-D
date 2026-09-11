@@ -246,7 +246,8 @@ def plot_residuals(results: Dict, output_path: Path) -> None:
 
     # Panel 3: box plot by type
     box_data = [residuals[types == t] for t in ("C", "R", "RC")]
-    bp = axes[2].boxplot(box_data, labels=["C", "R", "RC"], patch_artist=True, showfliers=True)
+    #fma bp = axes[2].boxplot(box_data, labels=["C", "R", "RC"], patch_artist=True, showfliers=True)
+    bp = axes[2].boxplot(box_data, tick_labels=["C", "R", "RC"], patch_artist=True, showfliers=True)
     for patch, t in zip(bp["boxes"], ("C", "R", "RC")):
         patch.set_facecolor(_TYPE_COLORS[t])
         patch.set_alpha(0.5)
