@@ -8,3 +8,14 @@ models/
 wandb/
 __pycache__/
 *.pdf
+GAT_V3/
+results*/
+smoke/
+*.pt
+*.npz
+*.pptx
+*.png
+*.csv
+__pycache__/
+*.pyc
+.ipynb_checkpoints/

@@ -54,8 +54,7 @@ import sys
 from collections import defaultdict
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import List, Tuple
-
+from typing import List, Optional, Tuple
 import torch
 from torch_geometric.data import Data
 
@@ -86,6 +85,10 @@ class NormStats:
     # Edge-feature z-score (distance, distance / battery_capacity)
     dist_mean: float;  dist_std: float
     ratio_mean: float; ratio_std: float
+    # Node-feature z-score for prize and penalty. Only populated when the
+    # graphs carry them (8-dim node features); None for the 6-dim case.
+    prize_mean: Optional[float] = None;   prize_std: Optional[float] = None
+    penalty_mean: Optional[float] = None; penalty_std: Optional[float] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -207,6 +210,21 @@ def compute_stats(graphs: List[Data], eps: float = 1e-8) -> NormStats:
     dists  = torch.cat([g.edge_attr[:, 0] for g in graphs])
     ratios = torch.cat([g.edge_attr[:, 1] for g in graphs])
 
+    # Prize and penalty are present only when build_graphs.py was run with
+    # --include-prize-penalty, which widens the node vector from 6 to 8.
+    has_pp = graphs[0].x.shape[1] >= 8
+    if has_pp:
+        prizes    = torch.cat([g.x[:, 6] for g in graphs])
+        penalties = torch.cat([g.x[:, 7] for g in graphs])
+        pp = {
+            "prize_mean":   float(prizes.mean()),
+            "prize_std":    float(prizes.std() + eps),
+            "penalty_mean": float(penalties.mean()),
+            "penalty_std":  float(penalties.std() + eps),
+        }
+    else:
+        pp = {}
+
     return NormStats(
         y_mean=float(y.mean()),   y_std=float(y.std() + eps),
         rt_min=float(rts.min()),  rt_max=float(rts.max()),
@@ -214,6 +232,7 @@ def compute_stats(graphs: List[Data], eps: float = 1e-8) -> NormStats:
         tw_min=float(tws.min()),  tw_max=float(tws.max()),
         dist_mean=float(dists.mean()),   dist_std=float(dists.std() + eps),
         ratio_mean=float(ratios.mean()), ratio_std=float(ratios.std() + eps),
+        **pp,
     )
 
 
@@ -247,13 +266,19 @@ def normalize_graph(
     dl_norm = (dl - stats.dl_min) / (stats.dl_max - stats.dl_min)
     tw_norm = (tw - stats.tw_min) / (stats.tw_max - stats.tw_min)
 
-    new_x = torch.cat([
+    parts = [
         coord_pe,
         demand_norm.unsqueeze(-1),
         rt_norm.unsqueeze(-1),
         dl_norm.unsqueeze(-1),
         tw_norm.unsqueeze(-1),
-    ], dim=-1)
+    ]
+    # Prize and penalty are z-scored, matching how the edge features are
+    # treated: both are unbounded magnitudes rather than [0,1] quantities.
+    if g.x.shape[1] >= 8 and stats.prize_mean is not None:
+        parts.append(((g.x[:, 6] - stats.prize_mean) / stats.prize_std).unsqueeze(-1))
+        parts.append(((g.x[:, 7] - stats.penalty_mean) / stats.penalty_std).unsqueeze(-1))
+    new_x = torch.cat(parts, dim=-1)
 
     dist_norm  = (g.edge_attr[:, 0] - stats.dist_mean)  / stats.dist_std
     ratio_norm = (g.edge_attr[:, 1] - stats.ratio_mean) / stats.ratio_std
@@ -419,10 +444,15 @@ def main(argv=None) -> int:
     print(f"  train = {len(train)}")
     print(f"  val   = {len(val)}")
     print(f"  test  = {len(test)}")
-    print(f"\nNode feature dim: {2 * args.pe_dim + 4}  (= 2*pe_dim + 4)")
+    node_dim = train[0].x.shape[1] if train else 2 * args.pe_dim + 4
+    extra = node_dim - 2 * args.pe_dim
+    print(f"\nNode feature dim: {node_dim}  (= 2*pe_dim + {extra})")
+    print(f"Prize/penalty features: {'included' if extra >= 6 else 'excluded'}")
     print(f"Edge feature dim: 2")
     print(f"\nTraining normalization stats:")
     for k, v in stats.to_dict().items():
+        if v is None:
+            continue   # prize/penalty stats are absent for 6-feature graphs
         print(f"  {k:11s} = {v: .4f}")
 
     config = {
@@ -432,7 +462,8 @@ def main(argv=None) -> int:
         "pe_base": args.pe_base,
         "stratify": args.stratify,
         "seed": args.seed,
-        "node_feature_dim": 2 * args.pe_dim + 4,
+        "node_feature_dim": node_dim,
+        "include_prize_penalty": extra >= 6,
         "edge_feature_dim": 2,
     }
 

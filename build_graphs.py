@@ -57,7 +57,7 @@ from torch_geometric.data import Data
 # ---------------------------------------------------------------------------
 # Defaults (overridable via CLI)
 # ---------------------------------------------------------------------------
-DEFAULT_TRAINING_DIR = Path("training data")
+DEFAULT_TRAINING_DIR = Path("training data v3")
 DEFAULT_REFERENCE_DIR = Path("data generation")
 DEFAULT_OUTPUT_DIR = Path("processed_graphs")
 DEFAULT_OUTPUT_NAME = "graphs.pt"
@@ -93,6 +93,8 @@ def build_graph(
     instance: dict,
     reference_data: Dict[str, dict],
     vehicle_load_override: Optional[float] = None,
+    node_set: str = "pool",
+    include_prize_penalty: bool = False,
 ) -> Data:
     """
     Build a PyG Data object for graph-level regression on objective_value.
@@ -108,13 +110,24 @@ def build_graph(
         raise KeyError(f"instance_id {instance_id!r} not found in reference data")
     ref = reference_data[instance_id]
 
-    # ---- served customer ids (depot is handled separately) ----------------
-    excluded = set(instance["customers_not_selected_first_place"]) | set(
-        instance["customers_not_visited_from_selected_pool"]
-    )
+    # ---- which customers become graph nodes (depot handled separately) ----
+    # "pool":   customers ALNS was given to work with. Excludes only those never
+    #           selected; keeps selected-but-not-visited. This is the right
+    #           semantics for screening candidate pools, since the pool is an
+    #           INPUT to ALNS while the served set is an OUTPUT.
+    # "served": customers ALNS actually visited. Excludes both lists.
+    if node_set == "pool":
+        excluded = set(instance["customers_not_selected_first_place"])
+    elif node_set == "served":
+        excluded = set(instance["customers_not_selected_first_place"]) | set(
+            instance["customers_not_visited_from_selected_pool"]
+        )
+    else:
+        raise ValueError(f"node_set must be 'pool' or 'served', got {node_set!r}")
+
     nodes_served = [i for i in range(1, NUM_CUSTOMERS + 1) if i not in excluded]
     if not nodes_served:
-        raise ValueError(f"{instance_id}: no served customers")
+        raise ValueError(f"{instance_id}: no customers in the {node_set} set")
 
     # Lookup: node_id -> node dict from the reference file
     ref_nodes_by_id = {n["node_id"]: n for n in ref["nodes"]}
@@ -122,21 +135,27 @@ def build_graph(
     # Graph order: depot first, then served customers in ascending id
     included_ids = [0] + nodes_served
 
-    # ---- node features (K+1 x 6) ------------------------------------------
+    # ---- node features (K+1 x 6) or + 8--------------------------------
     features = []
     for nid in included_ids:
         node = ref_nodes_by_id[nid]
         rt = float(node["release_time"])
         dl = float(node["deadline"])
-        features.append([
+        row = [
             float(node["x"]),
             float(node["y"]),
             float(node["demand"]),
             rt,
             dl,
             dl - rt,                       # time-window width
-        ])
-    x = torch.tensor(features, dtype=torch.float)        # [K+1, 6]
+        ]
+        if include_prize_penalty:
+            # The depot carries no prize or penalty in the reference files, so
+            # default to 0.0 rather than assuming the keys are present.
+            row.append(float(node.get("prize", 0.0)))
+            row.append(float(node.get("penalty", 0.0)))
+        features.append(row)
+    x = torch.tensor(features, dtype=torch.float)        # [K+1, 6] or [K+1, 8]
 
     # ---- battery capacity (needed for edge features) ----------------------
     bat_raw = instance.get("battery_capacity")
@@ -191,6 +210,8 @@ def build_graph(
 def load_all_graphs(
     training_dir: Path,
     reference_dir: Path,
+    node_set: str = "pool",
+    include_prize_penalty: bool = False,
 ) -> List[Data]:
     reference_data = load_reference_instances(reference_dir)
 
@@ -210,7 +231,13 @@ def load_all_graphs(
             instances = json.load(f)
         for instance in instances:
             try:
-                graphs.append(build_graph(instance, reference_data, vehicle_load_override=override))
+                #graphs.append(build_graph(instance, reference_data, vehicle_load_override=override))
+                graphs.append(build_graph(
+                    instance, reference_data,
+                    vehicle_load_override=override,
+                    node_set=node_set,
+                    include_prize_penalty=include_prize_penalty,
+                ))
             except Exception as e:
                 skipped += 1
                 print(f"  skipped {instance.get('instance_id', '?')}: {e}")
@@ -246,6 +273,18 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         "--output-name", default=DEFAULT_OUTPUT_NAME,
         help="Filename for the saved dataset inside --output-dir.",
     )
+    parser.add_argument(
+        "--node-set", choices=["pool", "served"], default="pool",
+        help="Which customers become graph nodes. 'pool' = everything ALNS was "
+             "given (excludes only never-selected); 'served' = only what ALNS "
+             "actually visited (also excludes selected-but-not-visited).",
+    )
+    parser.add_argument(
+        "--include-prize-penalty", action="store_true",
+        help="Append prize and penalty to each node's features (8 dims instead "
+             "of 6). The objective is built from these values, so including "
+             "them removes the need for the model to infer them from geometry.",
+    )    
     return parser.parse_args(argv)
 
 
@@ -261,7 +300,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     output_path = args.output_dir / args.output_name
 
-    graphs = load_all_graphs(args.training_dir, args.reference_dir)
+    print(f"Node set semantics: {args.node_set}")
+    print(f"Prize/penalty features: {'included' if args.include_prize_penalty else 'excluded'}")
+    graphs = load_all_graphs(args.training_dir, args.reference_dir,
+                             node_set=args.node_set,
+                             include_prize_penalty=args.include_prize_penalty)
 
     # Quick sanity check on the first graph
     if graphs:

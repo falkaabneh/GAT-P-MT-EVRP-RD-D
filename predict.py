@@ -137,8 +137,10 @@ class Predictor:
         prepared_config: Optional[Path] = None,
         pe_base: float = DEFAULT_PE_BASE,
         device: Optional[torch.device] = None,
+        node_set: str = "pool",
     ):
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.node_set = node_set
 
         ckpt = torch.load(Path(checkpoint_path), weights_only=False, map_location=self.device)
         cfg = ckpt["config"]
@@ -154,14 +156,24 @@ class Predictor:
         first_weight = ckpt["model_state_dict"]["node_encoder.0.weight"]
         self.in_channels = int(first_weight.shape[1])
 
-        # in_channels = 2 * pe_dim + 4  ->  pe_dim = (in_channels - 4) / 2
-        derived_pe_dim, remainder = divmod(self.in_channels - 4, 2)
-        if remainder != 0 or derived_pe_dim <= 0:
+        # in_channels = 2 * pe_dim + n_extra, where n_extra is 4 without the
+        # prize/penalty features and 6 with them. Both widths can be even, so
+        # the checkpoint alone is ambiguous; prepared_data/config.json settles
+        # it below and the candidates are recorded here for that check.
+        self._pe_dim_candidates = {}
+        for n_extra in (4, 6):
+            d, rem = divmod(self.in_channels - n_extra, 2)
+            if rem == 0 and d > 0:
+                self._pe_dim_candidates[n_extra] = d
+        if not self._pe_dim_candidates:
             raise ValueError(
                 f"Cannot derive pe_dim from in_channels={self.in_channels}; "
-                f"expected in_channels = 2*pe_dim + 4."
+                f"expected 2*pe_dim + 4 or 2*pe_dim + 6."
             )
-        self.pe_dim = derived_pe_dim
+        # Default to the 6-feature reading; config.json overrides when present.
+        n_extra_default = 4 if 4 in self._pe_dim_candidates else 6
+        self.include_prize_penalty = n_extra_default == 6
+        self.pe_dim = self._pe_dim_candidates[n_extra_default]
         self.pe_base = pe_base
 
         # Prefer the recorded data_prep config when available: it is the only
@@ -169,12 +181,20 @@ class Predictor:
         if prepared_config is not None:
             with open(prepared_config, "r") as f:
                 prep = json.load(f)
-            if "pe_dim" in prep and int(prep["pe_dim"]) != self.pe_dim:
-                raise ValueError(
-                    f"pe_dim mismatch: checkpoint implies {self.pe_dim}, "
-                    f"but {prepared_config} records {prep['pe_dim']}. "
-                    f"The checkpoint and prepared_data are from different runs."
-                )
+            if "pe_dim" in prep:
+                recorded = int(prep["pe_dim"])
+                # Accept whichever feature width reconciles the checkpoint's
+                # in_channels with the pe_dim this data was prepared at.
+                match = [n for n, d in self._pe_dim_candidates.items() if d == recorded]
+                if not match:
+                    raise ValueError(
+                        f"pe_dim mismatch: checkpoint in_channels={self.in_channels} "
+                        f"implies pe_dim in {sorted(self._pe_dim_candidates.values())}, "
+                        f"but {prepared_config} records {recorded}. The checkpoint and "
+                        f"prepared_data are from different runs."
+                    )
+                self.pe_dim = recorded
+                self.include_prize_penalty = match[0] == 6
             self.pe_base = float(prep.get("pe_base", pe_base))
 
         # Rebuild the architecture and load the trained weights
@@ -226,7 +246,9 @@ class Predictor:
             "objective_value": float("nan"),   # unknown at inference time
         }
 
-        g = build_graph(synthetic_record, self.reference_data)
+        g = build_graph(synthetic_record, self.reference_data,
+                        node_set=self.node_set,
+                        include_prize_penalty=self.include_prize_penalty)
         return normalize_graph(g, self.stats, self.pe_dim, self.pe_base)
 
     # ---- inference ---------------------------------------------------------
@@ -316,7 +338,10 @@ class Predictor:
 
         for idx, (rec, override) in enumerate(zip(records, vehicle_load_overrides)):
             try:
-                raw = build_graph(rec, self.reference_data, vehicle_load_override=override)
+                raw = build_graph(rec, self.reference_data,
+                                  vehicle_load_override=override,
+                                  node_set=self.node_set,
+                                  include_prize_penalty=self.include_prize_penalty)
                 graphs.append(normalize_graph(raw, self.stats, self.pe_dim, self.pe_base))
                 actual = rec.get("objective_value")
                 metas.append({
@@ -445,6 +470,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--output", type=Path, default=Path("predictions.csv"),
                    help="Where to write the predictions CSV.")
     p.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
+    p.add_argument("--node-set", choices=["pool", "served"], default="pool",
+                   help="Must match the semantics the checkpoint was trained with.")
     return p.parse_args(argv)
 
 
@@ -469,11 +496,13 @@ def main(argv=None) -> int:
         reference_dir=args.reference_dir,
         prepared_config=prepared_config,
         pe_base=args.pe_base,
+        node_set=args.node_set
     )
     print(f"  device:       {predictor.device}")
     print(f"  best epoch:   {predictor.best_epoch}")
     print(f"  in_channels:  {predictor.in_channels}  (pe_dim = {predictor.pe_dim}, "
           f"pe_base = {predictor.pe_base})")
+    print(f"  node_set:     {predictor.node_set}")
 
     pairs = collect_records(args.input)
     records   = [rec for rec, _ in pairs]
